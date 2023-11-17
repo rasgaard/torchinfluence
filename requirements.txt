@@ -1,0 +1,8 @@
+# bare minimum
+torch >= 2.1.0
+numpy >= 1.26.2
+
+# for running the notebook
+matplotlib >= 3.8.1
+pandas >= 2.1.3
+datasets >= 2.14.6

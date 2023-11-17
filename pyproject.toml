@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "torchinfluence"
+version = "0.1.0"
+description = "PyTorch implementation of training data attribution methods"
+authors = [
+    {name = "XXX", email = "XXX@dtu.dk"}
+]
+
+requires-python = ">=3.10"
+dynamic = ["dependencies", "optional-dependencies"]
+
+[tool.setuptools]
+packages = ["torchinfluence"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+select = [
+    "E",
+    "I", #see: https://pypi.org/project/isort/
+]
+
