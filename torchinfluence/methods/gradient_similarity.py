@@ -1,4 +1,4 @@
-from typing import Callable, List, Optional, Union
+from typing import Callable, Dict, List, Optional, Union
 
 import numpy as np
 import torch
@@ -18,8 +18,8 @@ class GradientSimilarity:
         model: torch.nn.Module,
         loss_fn: Callable,
         device: str = "cpu",
-        parameter_names: Optional[List[str]] = None,
-    ) -> None:
+        parameter_subset: Optional[List[str]] = None,
+    ):
         """
         Initializes a new instance of the GradientSimilarity class.
 
@@ -33,10 +33,11 @@ class GradientSimilarity:
         self.model = model.to(device)
 
         self.params = dict(model.named_parameters())
-        if parameter_names is not None:
-            self.params = {name: param for name, param in self.params.items() if name in parameter_names}
+        if parameter_subset is not None:
+            self.params = {name: param for name, param in self.params.items() if name in parameter_subset}
 
         self.loss_fn = loss_fn
+        self.chunk_size = 512
 
     def _compute_loss(self, params, inputs, targets):
         """
@@ -53,21 +54,26 @@ class GradientSimilarity:
         prediction = functional_call(self.model, params, (inputs,))
         return self.loss_fn(prediction, targets)
 
-    def dataset_gradients(self, dataset: Dataset) -> torch.Tensor:
+    def dataset_gradients(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         """
         Computes the gradients of the loss function with respect to the model parameters
         for a given dataset.
 
         Args:
-            dataset (Dataset): the dataset to compute the gradients for.
-
+            inputs (torch.Tensor): The inputs to compute the gradients for.
+            targets (torch.Tensor): The targets to compute the gradients for.
         Returns:
             torch.Tensor: a tensor containing the gradients of the loss function with respect
             to the model parameters, stacked horizontally.
         """
-        compute_grads = vmap(grad(self._compute_loss), in_dims=(None, 0, 0), chunk_size=512)
-        grads = compute_grads(self.params, dataset[:][0].to(self.device), dataset[:][1].to(self.device))
-        grads = torch.hstack([g.reshape(len(dataset), -1) for g in list(grads.values())])  # (len(dataset), num_params)
+
+        compute_grads = vmap(grad(self._compute_loss), in_dims=(None, 0, 0), chunk_size=self.chunk_size)
+
+        inputs, targets = inputs.to(self.device), targets.to(self.device)
+
+        grads = compute_grads(self.params, inputs, targets)
+        grads = torch.hstack([g.reshape(len(inputs), -1) for g in list(grads.values())])
+
         return grads
 
     def score(
@@ -107,15 +113,24 @@ class GradientSimilarity:
         train_dataset, test_dataset = datasets["train"], datasets["test"]
 
         scores = torch.zeros((len(test_dataset), len(train_dataset))).to(self.device)
-        test_grads = self.dataset_gradients(test_dataset)
 
-        for chunk_ids in DataLoader(range(0, len(train_dataset)), batch_size=chunk_size):
-            train_dataset_chunk = Subset(train_dataset, chunk_ids)
+        self.chunk_size = chunk_size
 
-            if subset_ids["train"] is not None:
-                train_dataset_chunk = train_dataset_chunk.dataset
+        test_inputs, test_targets = test_dataset[:][0], test_dataset[:][1]
+        test_grads = self.dataset_gradients(test_inputs, test_targets)
 
-            train_grads = self.dataset_gradients(train_dataset_chunk)
+        train_range = range(0, len(train_dataset))
+        id_dataloader = DataLoader(train_range, batch_size=chunk_size)
+        train_dataloader = DataLoader(train_dataset, batch_size=chunk_size)
+
+        for chunk_ids, train_dataset_chunk in zip(id_dataloader, train_dataloader):
+            train_inputs, train_targets = train_dataset_chunk
+
+            inputs_shape = train_inputs.shape
+            if (len(inputs_shape) == 3) and (inputs_shape[1] == 1):
+                train_inputs = train_inputs.squeeze(1)
+
+            train_grads = self.dataset_gradients(train_inputs, train_targets)
             scores[:, chunk_ids] = torch.matmul(test_grads, train_grads.T)
 
             if normalize:

@@ -3,7 +3,7 @@ import torch
 from torch.nn import Linear, MSELoss
 from torch.utils.data import Dataset
 
-from torchinfluence.methods.TracIn import GradientSimilarity
+from torchinfluence.methods import GradientSimilarity
 
 
 class MockDataset(Dataset):
@@ -34,7 +34,7 @@ class TestGradientSimilarity:
         dataset = MockDataset(data, targets)
 
         # Compute gradients
-        gradients = setup.dataset_gradients(dataset)
+        gradients = setup.dataset_gradients(data, targets)
 
         # Check that the output is a tensor
         assert isinstance(gradients, torch.Tensor)
