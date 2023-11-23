@@ -4,6 +4,7 @@ import numpy as np
 import torch
 from torch.func import functional_call, grad, vmap
 from torch.utils.data import DataLoader, Dataset, Subset
+from tqdm.auto import tqdm
 
 
 class GradientSimilarity:
@@ -67,13 +68,15 @@ class GradientSimilarity:
             to the model parameters, stacked horizontally.
         """
 
+        if (len(inputs.shape) == 3) and (inputs.shape[1] == 1):
+            inputs = inputs.squeeze(1)
+
         compute_grads = vmap(grad(self._compute_loss), in_dims=(None, 0, 0), chunk_size=self.chunk_size)
 
         inputs, targets = inputs.to(self.device), targets.to(self.device)
 
         grads = compute_grads(self.params, inputs, targets)
         grads = torch.hstack([g.reshape(len(inputs), -1) for g in list(grads.values())])
-
         return grads
 
     def score(
@@ -83,7 +86,8 @@ class GradientSimilarity:
         subset_ids: Union[str, List[int] | None] = {"train": None, "test": None},
         normalize: Optional[bool] = False,
         chunk_size: Optional[int] = 512,
-    ) -> np.ndarray:
+        progress_bar: Optional[bool] = True,
+    ) -> torch.Tensor:
         """
         Computes the similarity scores between the test dataset and the train dataset using
         the dot product of their gradients.
@@ -99,7 +103,7 @@ class GradientSimilarity:
                                         scores. Defaults to 512.
 
         Returns:
-            np.ndarray: A 2D array of shape (len(test_dataset), len(train_dataset)) containing the similarity scores
+            torch.Tensor: A 2D array of shape (len(test_dataset), len(train_dataset)) containing the similarity scores
                         between the test dataset and the train dataset.
         """
         datasets = {"train": train_dataset, "test": test_dataset}
@@ -112,7 +116,7 @@ class GradientSimilarity:
 
         train_dataset, test_dataset = datasets["train"], datasets["test"]
 
-        scores = torch.zeros((len(test_dataset), len(train_dataset))).to(self.device)
+        scores = np.zeros((len(test_dataset), len(train_dataset)))
 
         self.chunk_size = chunk_size
 
@@ -123,19 +127,20 @@ class GradientSimilarity:
         id_dataloader = DataLoader(train_range, batch_size=chunk_size)
         train_dataloader = DataLoader(train_dataset, batch_size=chunk_size)
 
-        for chunk_ids, train_dataset_chunk in zip(id_dataloader, train_dataloader):
+        chunk_loop = zip(id_dataloader, train_dataloader)
+        if progress_bar:
+            chunk_loop = tqdm(chunk_loop, total=len(id_dataloader))
+
+        for chunk_ids, train_dataset_chunk in chunk_loop:
             train_inputs, train_targets = train_dataset_chunk
 
-            inputs_shape = train_inputs.shape
-            if (len(inputs_shape) == 3) and (inputs_shape[1] == 1):
-                train_inputs = train_inputs.squeeze(1)
-
             train_grads = self.dataset_gradients(train_inputs, train_targets)
-            scores[:, chunk_ids] = torch.matmul(test_grads, train_grads.T)
+
+            scores[:, chunk_ids] = torch.matmul(test_grads, train_grads.T).detach().numpy()
 
             if normalize:
-                test_norm, train_norm = torch.norm(test_grads, dim=1)[:, None], torch.norm(train_grads, dim=1)[None, :]
-                norm_prod = (test_norm * train_norm).clamp(min=1e-8)
-                scores[:, chunk_ids] = scores[:, chunk_ids] / norm_prod
+                for i in range(len(test_grads)):
+                    norm = torch.norm(test_grads[i]) * torch.norm(train_grads, dim=1)
+                    scores[i, chunk_ids] = scores[i, chunk_ids] / norm.detach().numpy()
 
-        return scores.cpu().detach().numpy()
+        return torch.tensor(scores)
