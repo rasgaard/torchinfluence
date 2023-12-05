@@ -116,7 +116,7 @@ class GradientSimilarity:
 
         train_dataset, test_dataset = datasets["train"], datasets["test"]
 
-        scores = np.zeros((len(test_dataset), len(train_dataset)))
+        scores = torch.zeros((len(test_dataset), len(train_dataset)), dtype=torch.float16)
 
         self.chunk_size = chunk_size
 
@@ -136,11 +136,15 @@ class GradientSimilarity:
 
             train_grads = self.dataset_gradients(train_inputs, train_targets)
 
-            scores[:, chunk_ids] = torch.matmul(test_grads, train_grads.T).cpu().detach().numpy()
+            scores[:, chunk_ids] = torch.matmul(test_grads, train_grads.T).cpu().detach().to(dtype=torch.float16)
 
             if normalize:
                 for i in range(len(test_grads)):
-                    norm = torch.norm(test_grads[i]) * torch.norm(train_grads, dim=1)
-                    scores[i, chunk_ids] = scores[i, chunk_ids] / norm.cpu().detach().numpy()
+                    norm = (
+                        (torch.norm(test_grads[i]) * torch.norm(train_grads, dim=1))
+                        .to(dtype=torch.float16)
+                        .clamp(min=1e-7)
+                    )
+                    scores[i, chunk_ids] = scores[i, chunk_ids] / norm.cpu().detach()
 
-        return torch.tensor(scores)
+        return scores
