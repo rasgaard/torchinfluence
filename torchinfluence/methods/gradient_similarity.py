@@ -139,12 +139,9 @@ class GradientSimilarity:
             scores[:, chunk_ids] = torch.matmul(test_grads, train_grads.T).cpu().detach().to(dtype=torch.float16)
 
             if normalize:
-                for i in range(len(test_grads)):
-                    norm = (
-                        (torch.norm(test_grads[i]) * torch.norm(train_grads, dim=1))
-                        .to(dtype=torch.float16)
-                        .clamp(min=1e-7)
-                    )
-                    scores[i, chunk_ids] = scores[i, chunk_ids] / norm.cpu().detach()
+                test_norm = torch.linalg.vector_norm(test_grads, axis=1, keepdims=True)
+                train_norm = torch.linalg.vector_norm(train_grads, dim=1, keepdims=True)
+                norm = (test_norm * train_norm.T).to(dtype=torch.float16).clamp(min=1e-7)
+                scores[:, chunk_ids] /= norm.cpu().detach()
 
         return scores
