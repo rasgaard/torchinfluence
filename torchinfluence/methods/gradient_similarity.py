@@ -79,11 +79,34 @@ class GradientSimilarity:
         grads = torch.hstack([g.reshape(len(inputs), -1) for g in list(grads.values())])
         return grads
 
+    def create_subset(self, train_dataset: Dataset, test_dataset: Dataset, subset_ids: Dict[str, List[int]]):
+        """
+        Creates a subset of the train and test datasets.
+
+        Args:
+            train_dataset (Dataset): The original train dataset.
+            test_dataset (Dataset): The original test dataset.
+            subset_ids (Dict[str, List[int]]): A dictionary containing the subset ids for train and test datasets.
+
+        Returns:
+            Tuple[Dataset, Dataset]: The train and test datasets with the specified subsets.
+        """
+        datasets = {"train": train_dataset, "test": test_dataset}
+
+        subset_ids = {split: subset_ids[split] if split in subset_ids.keys() else None for split in ["train", "test"]}
+
+        for split in subset_ids.keys():
+            if subset_ids[split] is not None:
+                datasets[split] = Subset(datasets[split], subset_ids[split])
+
+        train_dataset, test_dataset = datasets["train"], datasets["test"]
+        return train_dataset, test_dataset
+
     def score(
         self,
         train_dataset: Dataset,
         test_dataset: Dataset,
-        subset_ids: Union[str, List[int] | None] = {"train": None, "test": None},
+        subset_ids: Dict[str, List[int] | None] = {"train": None, "test": None},
         normalize: Optional[bool] = False,
         chunk_size: Optional[int] = 512,
         progress_bar: Optional[bool] = True,
@@ -95,7 +118,7 @@ class GradientSimilarity:
         Args:
             train_dataset (Dataset): The dataset used for training.
             test_dataset (Dataset): The dataset used for testing.
-            subset_ids (Union[str, List[int] | None], optional): The ids of the subset of the train and test datasets
+            subset_ids (Dict[str, List[int] | None], optional): The ids of the subset of the train and test datasets
                                                                  to use for computing the scores. Defaults to
                                                                  {"train": None, "test": None}.
             normalize (bool, optional): Whether to normalize the scores. Defaults to False.
@@ -106,38 +129,31 @@ class GradientSimilarity:
             torch.Tensor: A 2D array of shape (len(test_dataset), len(train_dataset)) containing the similarity scores
                         between the test dataset and the train dataset.
         """
-        datasets = {"train": train_dataset, "test": test_dataset}
-
-        subset_ids = {split: subset_ids[split] if split in subset_ids.keys() else None for split in ["train", "test"]}
-
-        for split in subset_ids.keys():
-            if subset_ids[split] is not None:
-                datasets[split] = Subset(datasets[split], subset_ids[split])
-
-        train_dataset, test_dataset = datasets["train"], datasets["test"]
-
-        scores = torch.zeros((len(test_dataset), len(train_dataset)), dtype=torch.float16)
-
         self.chunk_size = chunk_size
 
+        train_dataset, test_dataset = self.create_subset(train_dataset, test_dataset, subset_ids)
+        scores = torch.zeros((len(test_dataset), len(train_dataset)), dtype=torch.float16)
+
+        # Compute gradients for the entire test dataset
         test_inputs, test_targets = test_dataset[:][0], test_dataset[:][1]
         test_grads = self.dataset_gradients(test_inputs, test_targets)
 
-        train_range = range(0, len(train_dataset))
-        id_dataloader = DataLoader(train_range, batch_size=chunk_size)
+        id_dataloader = DataLoader(range(len(train_dataset)), batch_size=chunk_size)
         train_dataloader = DataLoader(train_dataset, batch_size=chunk_size)
 
         chunk_loop = zip(id_dataloader, train_dataloader)
         if progress_bar:
             chunk_loop = tqdm(chunk_loop, total=len(id_dataloader))
 
+        # Compute gradients for the train dataset in chunks
+        # and compute the similarity scores
         for chunk_ids, train_dataset_chunk in chunk_loop:
             train_inputs, train_targets = train_dataset_chunk
-
             train_grads = self.dataset_gradients(train_inputs, train_targets)
 
             scores[:, chunk_ids] = torch.matmul(test_grads, train_grads.T).cpu().detach().to(dtype=torch.float16)
 
+            # Normalizes dot product turning it into cosine similarity
             if normalize:
                 test_norm = torch.linalg.vector_norm(test_grads, axis=1, keepdims=True)
                 train_norm = torch.linalg.vector_norm(train_grads, dim=1, keepdims=True)
