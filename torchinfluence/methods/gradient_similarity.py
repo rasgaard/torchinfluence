@@ -103,7 +103,7 @@ class GradientSimilarity:
         return train_dataset, test_dataset
 
     def create_chunk_loop(self, dataset: Dataset):
-        id_loader = DataLoader(range(len(dataset)), batch_size=self.chunk_size)
+        id_loader = DataLoader(range(len(dataset)), batch_size=self.chunk_size)  # todo: change to simple range
         data_loader = DataLoader(dataset, batch_size=self.chunk_size)
 
         chunk_loop = zip(id_loader, data_loader)
@@ -138,11 +138,10 @@ class GradientSimilarity:
                         between the test dataset and the train dataset.
         """
         self.chunk_size = chunk_size
-        bar = tqdm(
-            total=int((len(test_dataset) / chunk_size) * (len(train_dataset) / chunk_size)), disable=not progress_bar
-        )
 
         train_dataset, test_dataset = self.create_subset(train_dataset, test_dataset, subset_ids)
+
+        bar = tqdm(total=int(len(test_dataset) * len(train_dataset)), disable=not progress_bar)
         scores = torch.zeros((len(test_dataset), len(train_dataset)), dtype=torch.float16)
 
         test_chunk_loop = self.create_chunk_loop(test_dataset)
@@ -174,5 +173,6 @@ class GradientSimilarity:
                     norm = (test_norm * train_norm.T).to(dtype=torch.float16).clamp(min=1e-7)
                     scores[test_idx_start:test_idx_end, train_idx_start:train_idx_end] /= norm.cpu().detach()
 
-                bar.update(1)
+                bar.update(n=len(train_chunk_ids) * len(test_chunk_ids))
+
         return scores
