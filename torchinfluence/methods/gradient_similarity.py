@@ -102,6 +102,14 @@ class GradientSimilarity:
         train_dataset, test_dataset = datasets["train"], datasets["test"]
         return train_dataset, test_dataset
 
+    def create_chunk_loop(self, dataset: Dataset):
+        id_loader = DataLoader(range(len(dataset)), batch_size=self.chunk_size)
+        data_loader = DataLoader(dataset, batch_size=self.chunk_size)
+
+        chunk_loop = zip(id_loader, data_loader)
+
+        return chunk_loop
+
     def score(
         self,
         train_dataset: Dataset,
@@ -130,34 +138,41 @@ class GradientSimilarity:
                         between the test dataset and the train dataset.
         """
         self.chunk_size = chunk_size
+        bar = tqdm(
+            total=int((len(test_dataset) / chunk_size) * (len(train_dataset) / chunk_size)), disable=not progress_bar
+        )
 
         train_dataset, test_dataset = self.create_subset(train_dataset, test_dataset, subset_ids)
         scores = torch.zeros((len(test_dataset), len(train_dataset)), dtype=torch.float16)
 
-        # Compute gradients for the entire test dataset
-        test_inputs, test_targets = test_dataset[:][0], test_dataset[:][1]
-        test_grads = self.dataset_gradients(test_inputs, test_targets)
-
-        id_dataloader = DataLoader(range(len(train_dataset)), batch_size=chunk_size)
-        train_dataloader = DataLoader(train_dataset, batch_size=chunk_size)
-
-        chunk_loop = zip(id_dataloader, train_dataloader)
-        if progress_bar:
-            chunk_loop = tqdm(chunk_loop, total=len(id_dataloader))
+        test_chunk_loop = self.create_chunk_loop(test_dataset)
 
         # Compute gradients for the train dataset in chunks
         # and compute the similarity scores
-        for chunk_ids, train_dataset_chunk in chunk_loop:
-            train_inputs, train_targets = train_dataset_chunk
-            train_grads = self.dataset_gradients(train_inputs, train_targets)
+        for test_chunk_ids, test_dataset_chunk in test_chunk_loop:
+            test_inputs, test_targets = test_dataset_chunk
+            test_grads = self.dataset_gradients(test_inputs, test_targets)
+            test_idx_start, test_idx_end = test_chunk_ids[0], test_chunk_ids[-1] + 1
 
-            scores[:, chunk_ids] = torch.matmul(test_grads, train_grads.T).cpu().detach().to(dtype=torch.float16)
-
-            # Normalizes dot product turning it into cosine similarity
             if normalize:
                 test_norm = torch.linalg.vector_norm(test_grads, axis=1, keepdims=True)
-                train_norm = torch.linalg.vector_norm(train_grads, dim=1, keepdims=True)
-                norm = (test_norm * train_norm.T).to(dtype=torch.float16).clamp(min=1e-7)
-                scores[:, chunk_ids] /= norm.cpu().detach()
 
+            train_chunk_loop = self.create_chunk_loop(train_dataset)
+            for train_chunk_ids, train_dataset_chunk in train_chunk_loop:
+                train_inputs, train_targets = train_dataset_chunk
+                train_grads = self.dataset_gradients(train_inputs, train_targets)
+
+                train_idx_start, train_idx_end = train_chunk_ids[0], train_chunk_ids[-1] + 1
+
+                scores[test_idx_start:test_idx_end, train_idx_start:train_idx_end] = (
+                    torch.matmul(test_grads, train_grads.T).cpu().detach().to(dtype=torch.float16)
+                )
+
+                # Normalizes dot product turning it into cosine similarity
+                if normalize:
+                    train_norm = torch.linalg.vector_norm(train_grads, dim=1, keepdims=True)
+                    norm = (test_norm * train_norm.T).to(dtype=torch.float16).clamp(min=1e-7)
+                    scores[test_idx_start:test_idx_end, train_idx_start:train_idx_end] /= norm.cpu().detach()
+
+                bar.update(1)
         return scores
