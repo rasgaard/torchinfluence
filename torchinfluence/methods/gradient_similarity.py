@@ -176,3 +176,42 @@ class GradientSimilarity:
                 bar.update(n=len(train_chunk_ids) * len(test_chunk_ids))
 
         return scores
+
+
+class HFSeqClfGradientSimilarity(GradientSimilarity):
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        loss_fn: Callable,
+        device: str = "cpu",
+        parameter_subset: Optional[List[str]] = None,
+    ):
+        super().__init__(model, loss_fn, device, parameter_subset)
+
+    def _compute_loss(self, params, inputs, targets):
+        prediction = functional_call(self.model, params, (*inputs,))
+        prediction = prediction.logits
+
+        return self.loss_fn(prediction, targets)
+
+    def dataset_gradients(self, inputs: Union[str, torch.Tensor], targets: torch.Tensor):
+        inputs_shape = inputs["input_ids"].shape
+
+        if (len(inputs_shape) == 3) and (inputs_shape[1] == 1):
+            inputs = {k: v.squeeze(1) for k, v in inputs.items()}
+
+        input_ids = inputs["input_ids"].to(self.device)
+        attention_mask = inputs["attention_mask"].to(self.device)
+        targets = targets.to(self.device)
+
+        compute_grads = vmap(grad(self._compute_loss), in_dims=(None, 0, 0), chunk_size=self.chunk_size)
+        grads = compute_grads(
+            self.params,
+            (
+                input_ids.unsqueeze(1),
+                attention_mask.unsqueeze(1),
+            ),
+            targets.unsqueeze(1),
+        )
+        grads = torch.hstack([g.flatten() for g in list(grads.values())]).reshape(inputs_shape[0], -1)
+        return grads

@@ -1,1 +1,1 @@
-from torchinfluence.methods.gradient_similarity import GradientSimilarity
+from torchinfluence.methods.gradient_similarity import GradientSimilarity, HFSeqClfGradientSimilarity
